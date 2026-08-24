@@ -22,6 +22,7 @@
     analysisLoading: false,
     analysisRefreshing: false,
     analysisError: null,
+    selectedCandleOpenTime: null,
   };
 
   function renderApp() {
@@ -65,6 +66,7 @@
     } else {
       state.analysisLoading = true;
       state.analysis = null;
+      state.selectedCandleOpenTime = null;
     }
 
     renderApp();
@@ -109,7 +111,14 @@
       return;
     }
     state.timeframe = timeframe;
+    state.selectedCandleOpenTime = null;
     void loadAnalysis();
+  }
+
+  function setSelectedCandle(openTime) {
+    state.selectedCandleOpenTime =
+      String(state.selectedCandleOpenTime) === String(openTime) ? null : String(openTime);
+    renderApp();
   }
 
   function startAutoRefresh() {
@@ -154,6 +163,11 @@
 
     if (action === "set-timeframe") {
       setTimeframe(target.dataset.timeframe);
+      return;
+    }
+
+    if (action === "select-candle") {
+      setSelectedCandle(target.dataset.candleOpenTime);
     }
   });
 

@@ -4,9 +4,14 @@
   const rules = window.BinanceAnalyzer.AnalysisRules;
   const { calculateEMA } = window.BinanceAnalyzer.EMAIndicator;
   const { calculateRSI } = window.BinanceAnalyzer.RSIIndicator;
-  const { calculateAverageVolume } = window.BinanceAnalyzer.VolumeIndicator;
+  const {
+    getClosedCandles,
+    getLastClosedCandle,
+    calculateAverageVolume,
+    calculateVolumeDeltaPercent,
+  } = window.BinanceAnalyzer.VolumeIndicator;
   const { detectSupportAndResistance } = window.BinanceAnalyzer.LevelsIndicator;
-  const { formatPrice } = window.BinanceAnalyzer.Format;
+  const { formatPrice, formatPercent } = window.BinanceAnalyzer.Format;
 
   function getLatestValue(series) {
     for (let index = series.length - 1; index >= 0; index -= 1) {
@@ -33,7 +38,15 @@
     return "Sobreventa";
   }
 
-  function determineBias(currentPrice, indicators) {
+  function calculateDistancePercent(currentPrice, level) {
+    if (!level) {
+      return null;
+    }
+
+    return ((level - currentPrice) / currentPrice) * 100;
+  }
+
+  function determineTrend(currentPrice, indicators) {
     const currentRsi = indicators.rsi14;
     const conditions = {
       priceAboveEma21: currentPrice > indicators.ema21,
@@ -51,87 +64,208 @@
       rsiOversold: currentRsi < rules.rsiBands.oversold,
     };
 
-    const bullishSetup =
-      conditions.priceAboveEma21 &&
+    let bullishScore = 0;
+    let bearishScore = 0;
+
+    if (conditions.emaBullStack) {
+      bullishScore += rules.trendWeights.emaStack;
+    }
+    if (conditions.emaBearStack) {
+      bearishScore += rules.trendWeights.emaStack;
+    }
+    if (conditions.priceAboveEma21) {
+      bullishScore += rules.trendWeights.priceVsEma21;
+    }
+    if (conditions.priceBelowEma21) {
+      bearishScore += rules.trendWeights.priceVsEma21;
+    }
+    if (conditions.rsiBullishZone) {
+      bullishScore += rules.trendWeights.rsiImpulse;
+    } else if (conditions.rsiOverbought) {
+      bullishScore += rules.trendWeights.rsiExtreme;
+    }
+    if (conditions.rsiBearishZone) {
+      bearishScore += rules.trendWeights.rsiImpulse;
+    } else if (conditions.rsiOversold) {
+      bearishScore += rules.trendWeights.rsiExtreme;
+    }
+
+    const trend =
       conditions.emaBullStack &&
-      conditions.rsiBullishZone &&
-      conditions.volumeAboveAverage;
-
-    const bearishSetup =
-      conditions.priceBelowEma21 &&
-      conditions.emaBearStack &&
-      conditions.rsiBearishZone &&
-      conditions.volumeAboveAverage;
-
-    const bias = bullishSetup ? "ALCISTA" : bearishSetup ? "BAJISTA" : "NEUTRAL";
+      bullishScore >= rules.trendWeights.minimumDirectionalScore &&
+      bullishScore >= bearishScore + rules.trendWeights.minimumDirectionalEdge
+        ? "ALCISTA"
+        : conditions.emaBearStack &&
+            bearishScore >= rules.trendWeights.minimumDirectionalScore &&
+            bearishScore >= bullishScore + rules.trendWeights.minimumDirectionalEdge
+          ? "BAJISTA"
+          : "NEUTRAL";
 
     return {
-      bias,
+      trend,
       conditions,
       rsiStateLabel: describeRsiState(currentRsi),
+      bullishScore,
+      bearishScore,
     };
   }
 
-  function generateExplanation(bias, currentPrice, indicators, conditions) {
-    const supportText = indicators.support
-      ? `Hay soporte cercano en ${formatPrice(indicators.support)} USDT; conviene vigilar si sostiene.`
-      : "No aparece un soporte cercano claro en esta muestra.";
+  function determineSetup(trend, indicators, conditions) {
+    const setupReasons = [];
+    const resistanceDistancePct = indicators.resistanceDistancePct;
+    const supportDistancePct = indicators.supportDistancePct;
+    const volumeOkay = indicators.volumeDeltaPercent >= rules.setupThresholds.minVolumeDeltaPct;
+    const breakoutVolume =
+      indicators.volumeDeltaPercent >= rules.setupThresholds.breakoutVolumeDeltaPct;
+    const resistanceNear =
+      resistanceDistancePct !== null &&
+      resistanceDistancePct <= rules.setupThresholds.nearResistancePct;
+    const supportNear =
+      supportDistancePct !== null &&
+      Math.abs(supportDistancePct) <= rules.setupThresholds.nearSupportPct;
+    const enoughRoomLong =
+      resistanceDistancePct === null ||
+      resistanceDistancePct >= rules.setupThresholds.minimumRoomLongPct;
+    const enoughRoomShort =
+      supportDistancePct === null ||
+      Math.abs(supportDistancePct) >= rules.setupThresholds.minimumRoomShortPct;
 
-    const resistanceText = indicators.resistance
-      ? `Hay resistencia cercana en ${formatPrice(indicators.resistance)} USDT; conviene esperar confirmación.`
-      : "No aparece una resistencia cercana clara en esta muestra.";
+    if (trend === "ALCISTA") {
+      if (!volumeOkay) {
+        setupReasons.push("volumen bajo");
+      }
+      if (resistanceNear || !enoughRoomLong) {
+        setupReasons.push("resistencia cercana");
+      }
+      if (conditions.rsiOverbought) {
+        setupReasons.push("RSI en sobrecompra");
+      } else if (!conditions.rsiBullishZone) {
+        setupReasons.push("RSI sin impulso alcista claro");
+      }
 
-    if (bias === "ALCISTA") {
+      const breakoutConfirmed = resistanceDistancePct === null && breakoutVolume;
+      const possibleLong =
+        !conditions.rsiOverbought &&
+        volumeOkay &&
+        (conditions.rsiBullishZone || breakoutConfirmed) &&
+        (enoughRoomLong || breakoutConfirmed);
+
       return [
-        "Sesgo alcista moderado.",
-        "El precio está sobre EMA21 y la estructura EMA21 > EMA50 > EMA180 sigue ordenada.",
-        "El RSI se mantiene en impulso alcista y el volumen está por encima del promedio.",
-        resistanceText,
-      ].join(" ");
+        possibleLong ? "POSIBLE LONG" : "ESPERAR",
+        setupReasons,
+      ];
     }
 
-    if (bias === "BAJISTA") {
+    if (trend === "BAJISTA") {
+      if (!volumeOkay) {
+        setupReasons.push("volumen bajo");
+      }
+      if (supportNear || !enoughRoomShort) {
+        setupReasons.push("soporte cercano");
+      }
+      if (conditions.rsiOversold) {
+        setupReasons.push("RSI en sobreventa");
+      } else if (!conditions.rsiBearishZone) {
+        setupReasons.push("RSI sin impulso bajista claro");
+      }
+
+      const breakdownConfirmed = supportDistancePct === null && breakoutVolume;
+      const possibleShort =
+        !conditions.rsiOversold &&
+        volumeOkay &&
+        (conditions.rsiBearishZone || breakdownConfirmed) &&
+        (enoughRoomShort || breakdownConfirmed);
+
       return [
-        "Sesgo bajista moderado.",
-        "El precio está por debajo de EMA21 y la estructura EMA21 < EMA50 < EMA180 sigue ordenada.",
-        "El RSI muestra impulso bajista y el volumen acompaña la caída.",
-        supportText,
-      ].join(" ");
+        possibleShort ? "POSIBLE SHORT" : "ESPERAR",
+        setupReasons,
+      ];
     }
 
-    const missingSignals = [];
-    if (!conditions.priceAboveEma21 && !conditions.priceBelowEma21) {
-      missingSignals.push("el precio no define relación clara con EMA21");
-    }
     if (!conditions.emaBullStack && !conditions.emaBearStack) {
-      missingSignals.push("las EMAs no están alineadas");
-    }
-    if (!conditions.volumeAboveAverage) {
-      missingSignals.push("el volumen está bajo");
+      setupReasons.push("estructura de medias contradictoria");
     }
     if (!conditions.rsiBullishZone && !conditions.rsiBearishZone) {
-      missingSignals.push("el RSI está fuera de zona de impulso");
+      setupReasons.push("RSI sin impulso claro");
+    }
+    if (!volumeOkay) {
+      setupReasons.push("volumen bajo");
+    }
+    return ["ESPERAR", setupReasons];
+  }
+
+  function generateExplanation(trend, setup, indicators, conditions, setupReasons) {
+    const resistanceText =
+      indicators.resistanceDistancePct !== null
+        ? `La resistencia está a ${formatPercent(indicators.resistanceDistancePct)} del precio actual.`
+        : "No aparece una resistencia inmediata por encima del precio.";
+    const supportText =
+      indicators.supportDistancePct !== null
+        ? `El soporte está a ${formatPercent(indicators.supportDistancePct)} del precio actual.`
+        : "No aparece un soporte inmediato por debajo del precio.";
+
+    if (trend === "ALCISTA" && setup === "POSIBLE LONG") {
+      return [
+        "Tendencia alcista.",
+        "El precio se mantiene sobre EMA21, EMA50 y EMA180 y el RSI conserva impulso alcista.",
+        `El volumen de la última vela cerrada está ${formatPercent(indicators.volumeDeltaPercent)} vs promedio 10 velas.`,
+        "SETUP: POSIBLE LONG.",
+      ].join(" ");
+    }
+
+    if (trend === "ALCISTA") {
+      const reasonText = setupReasons.length
+        ? `Sin embargo, ${setupReasons.join(" y ")}.`
+        : "Todavía falta confirmación para una entrada limpia.";
+      return [
+        "Tendencia alcista.",
+        "La estructura de medias sigue favorable y el RSI mantiene sesgo positivo.",
+        reasonText,
+        `${resistanceText} SETUP: ESPERAR.`,
+      ].join(" ");
+    }
+
+    if (trend === "BAJISTA" && setup === "POSIBLE SHORT") {
+      return [
+        "Tendencia bajista confirmada por la estructura de medias y el RSI.",
+        `El volumen de la última vela cerrada está ${formatPercent(indicators.volumeDeltaPercent)} vs promedio 10 velas.`,
+        `${supportText} SETUP: POSIBLE SHORT.`,
+      ].join(" ");
+    }
+
+    if (trend === "BAJISTA") {
+      const reasonText = setupReasons.length
+        ? `Sin embargo, ${setupReasons.join(" y ")}.`
+        : "Todavía falta confirmación para una entrada SHORT clara.";
+      return [
+        "Tendencia bajista.",
+        "La presión sigue bajista por debajo de EMA21, EMA50 y EMA180.",
+        reasonText,
+        `${supportText} SETUP: ESPERAR.`,
+      ].join(" ");
     }
 
     return [
-      "NO HAY SETUP CLARO. ESPERAR.",
-      `Las señales son contradictorias: ${missingSignals.join(", ")}.`,
-      currentPrice > indicators.ema21 && currentPrice < indicators.ema50
-        ? "El precio quedó entre EMA21 y EMA50."
-        : "La estructura actual no confirma un solo sesgo.",
-      "No conviene forzar una lectura LONG o SHORT.",
+      "Tendencia neutral.",
+      "Las señales son contradictorias entre precio, medias y RSI.",
+      setupReasons.length ? `Además, ${setupReasons.join(" y ")}.` : "No existe ventaja estadística clara.",
+      "SETUP: ESPERAR.",
     ].join(" ");
   }
 
   function buildSymbolAnalysis(symbol, timeframe, candles, currentPrice) {
-    const closes = candles.map((candle) => candle.close);
+    const closedCandles = getClosedCandles(candles);
+    const closes = closedCandles.map((candle) => candle.close);
     const ema21Series = calculateEMA(closes, rules.emaPeriods.fast);
     const ema50Series = calculateEMA(closes, rules.emaPeriods.medium);
     const ema180Series = calculateEMA(closes, rules.emaPeriods.slow);
     const rsi14Series = calculateRSI(closes, rules.rsiPeriod);
+    const lastClosedCandle = getLastClosedCandle(candles);
     const averageVolume10 = calculateAverageVolume(candles, rules.volumeAveragePeriod);
+    const lastClosedVolume = lastClosedCandle ? lastClosedCandle.volume : 0;
+    const volumeDeltaPercent = calculateVolumeDeltaPercent(lastClosedVolume, averageVolume10);
     const supportResistance = detectSupportAndResistance(
-      candles,
+      closedCandles,
       currentPrice,
       rules.levelLookback,
       rules.swingWindow,
@@ -142,37 +276,44 @@
       ema50: getLatestValue(ema50Series),
       ema180: getLatestValue(ema180Series),
       rsi14: getLatestValue(rsi14Series),
-      currentVolume: candles[candles.length - 1] ? candles[candles.length - 1].volume : 0,
+      currentVolume: lastClosedVolume,
       averageVolume10,
+      volumeDeltaPercent,
       support: supportResistance.support,
       resistance: supportResistance.resistance,
-      volumeAboveAverage:
-        (candles[candles.length - 1] ? candles[candles.length - 1].volume : 0) > averageVolume10,
+      supportDistancePct: calculateDistancePercent(currentPrice, supportResistance.support),
+      resistanceDistancePct: calculateDistancePercent(currentPrice, supportResistance.resistance),
+      volumeAboveAverage: lastClosedVolume > averageVolume10,
+      lastClosedCandleTime: lastClosedCandle ? lastClosedCandle.closeTime : null,
     };
 
-    const { bias, conditions, rsiStateLabel } = determineBias(currentPrice, indicators);
+    const { trend, conditions, rsiStateLabel } = determineTrend(currentPrice, indicators);
+    const [setup, setupReasons] = determineSetup(trend, indicators, conditions);
 
     return {
       symbol,
       timeframe,
       currentPrice,
-      candles,
+      candles: closedCandles,
       ema21Series,
       ema50Series,
       ema180Series,
       rsi14Series,
       indicators,
-      bias,
+      trend,
+      setup,
       rsiStateLabel,
       conditions,
-      explanation: generateExplanation(bias, currentPrice, indicators, conditions),
+      setupReasons,
+      explanation: generateExplanation(trend, setup, indicators, conditions, setupReasons),
       lastUpdated: Date.now(),
     };
   }
 
   window.BinanceAnalyzer.AnalysisEngine = {
     buildSymbolAnalysis,
-    determineBias,
+    determineTrend,
+    determineSetup,
     generateExplanation,
   };
 })();

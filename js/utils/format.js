@@ -40,6 +40,19 @@
     });
   }
 
+  function formatCandleDateTime(timestamp) {
+    if (!timestamp) {
+      return "--";
+    }
+
+    return new Date(timestamp).toLocaleString("es-AR", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
   function escapeHtml(value) {
     return String(value)
       .replaceAll("&", "&amp;")
@@ -54,6 +67,7 @@
     formatPercent,
     formatVolume,
     formatLastUpdated,
+    formatCandleDateTime,
     escapeHtml,
   };
 })();

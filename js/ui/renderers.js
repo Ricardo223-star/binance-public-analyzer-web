@@ -7,14 +7,24 @@
   const { renderCandlestickChart } = window.BinanceAnalyzer.ChartUI;
   const { TIMEFRAMES } = window.BinanceAnalyzer.Models;
 
-  function renderBadge(bias) {
-    if (bias === "ALCISTA") {
+  function renderTrendBadge(trend) {
+    if (trend === "ALCISTA") {
       return '<div class="status-badge alcista">ALCISTA</div>';
     }
-    if (bias === "BAJISTA") {
+    if (trend === "BAJISTA") {
       return '<div class="status-badge bajista">BAJISTA</div>';
     }
-    return '<div class="status-badge neutral">NEUTRAL / SIN SETUP CLARO</div>';
+    return '<div class="status-badge neutral">NEUTRAL</div>';
+  }
+
+  function renderSetupBadge(setup) {
+    if (setup === "POSIBLE LONG") {
+      return '<div class="status-badge alcista">POSIBLE LONG</div>';
+    }
+    if (setup === "POSIBLE SHORT") {
+      return '<div class="status-badge bajista">POSIBLE SHORT</div>';
+    }
+    return '<div class="status-badge neutral">ESPERAR / SIN SETUP</div>';
   }
 
   function renderHome(state) {
@@ -22,23 +32,11 @@
 
     return `
       <section class="screen-block">
-        <section class="hero-card card">
-          <h2>Lectura rápida de mercado</h2>
-          <p class="hero-copy">
-            Precio actual, variación de 24 horas y acceso al análisis técnico de BTC/USDT y ETH/USDT.
-          </p>
-        </section>
-
         <section class="info-row">
           <p class="updated-time">Última actualización: ${formatLastUpdated(state.homeLastUpdated)}</p>
-          <div class="action-row">
-            <button class="action-button secondary" data-action="refresh-home">
-              ${state.homeRefreshing ? "Actualizando..." : "Actualizar"}
-            </button>
-            <button class="action-button primary" data-action="open-symbol" data-symbol="BTCUSDT">
-              Abrir BTC
-            </button>
-          </div>
+          <button class="action-button secondary action-single" data-action="refresh-home">
+            ${state.homeRefreshing ? "Actualizando..." : "Actualizar"}
+          </button>
         </section>
 
         ${state.homeError ? `<p class="error-text">${escapeHtml(state.homeError)}</p>` : ""}
@@ -65,14 +63,6 @@
               `;
             })
             .join("")}
-        </section>
-
-        <section class="text-card card">
-          <h3>Alcance del MVP</h3>
-          <p class="explanation">
-            Esta versión usa únicamente endpoints públicos de Binance. No hay trading automático,
-            no hay API privada y no se fuerza un LONG o SHORT cuando no existe setup claro.
-          </p>
         </section>
       </section>
     `;
@@ -111,38 +101,15 @@
     const supportValue = analysis.indicators.support
       ? `${formatPrice(analysis.indicators.support)} USDT`
       : "No detectado";
+    const supportDistance = analysis.indicators.supportDistancePct !== null
+      ? formatPercent(analysis.indicators.supportDistancePct)
+      : null;
     const resistanceValue = analysis.indicators.resistance
       ? `${formatPrice(analysis.indicators.resistance)} USDT`
       : "No detectada";
-
-    const conditionCards = [
-      {
-        label: "Precio vs EMA21",
-        value: analysis.conditions.priceAboveEma21
-          ? "Precio sobre EMA21"
-          : analysis.conditions.priceBelowEma21
-            ? "Precio bajo EMA21"
-            : "Sin definición",
-      },
-      {
-        label: "Estructura EMA",
-        value: analysis.conditions.emaBullStack
-          ? "EMA21 > EMA50 > EMA180"
-          : analysis.conditions.emaBearStack
-            ? "EMA21 < EMA50 < EMA180"
-            : "EMAs mezcladas",
-      },
-      {
-        label: "RSI",
-        value: `${analysis.indicators.rsi14.toFixed(2)} · ${analysis.rsiStateLabel}`,
-      },
-      {
-        label: "Volumen",
-        value: analysis.conditions.volumeAboveAverage
-          ? "Superior al promedio"
-          : "Por debajo del promedio",
-      },
-    ];
+    const resistanceDistance = analysis.indicators.resistanceDistancePct !== null
+      ? formatPercent(analysis.indicators.resistanceDistancePct)
+      : null;
 
     return `
       <section class="screen-block">
@@ -155,10 +122,19 @@
 
         <section class="analysis-card card analysis-header">
           <h2>${analysis.symbol.replace("USDT", "/USDT")}</h2>
-          <p class="analysis-copy">
-            Velas, EMAs, RSI, volumen, soporte y resistencia con datos públicos de Binance.
-          </p>
-          ${renderBadge(analysis.bias)}
+          <p class="price-label">Precio actual</p>
+          <p class="price-value">${formatPrice(analysis.currentPrice)} USDT</p>
+          <p class="updated-time">Última actualización: ${formatLastUpdated(analysis.lastUpdated)}</p>
+          <div class="signal-grid">
+            <article class="signal-card">
+              <p class="signal-label">Tendencia</p>
+              ${renderTrendBadge(analysis.trend)}
+            </article>
+            <article class="signal-card">
+              <p class="signal-label">Setup</p>
+              ${renderSetupBadge(analysis.setup)}
+            </article>
+          </div>
         </section>
 
         <section class="timeframe-row">
@@ -177,53 +153,34 @@
 
         ${state.analysisError ? `<p class="error-text">${escapeHtml(state.analysisError)}</p>` : ""}
 
-        <section class="analysis-card card price-spotlight">
-          <p class="price-label">Precio actual</p>
-          <p class="price-value">${formatPrice(analysis.currentPrice)} USDT</p>
-          <p class="updated-time">Última actualización: ${formatLastUpdated(analysis.lastUpdated)}</p>
-        </section>
-
         <section class="chart-card card">
-          ${renderCandlestickChart(analysis)}
+          ${renderCandlestickChart(analysis, state.selectedCandleOpenTime)}
         </section>
 
-        <section class="metric-grid">
-          <article class="metric-card"><p class="metric-label">EMA 21</p><p class="metric-value">${formatPrice(analysis.indicators.ema21)}</p></article>
-          <article class="metric-card"><p class="metric-label">EMA 50</p><p class="metric-value">${formatPrice(analysis.indicators.ema50)}</p></article>
-          <article class="metric-card"><p class="metric-label">EMA 180</p><p class="metric-value">${formatPrice(analysis.indicators.ema180)}</p></article>
-          <article class="metric-card"><p class="metric-label">RSI 14</p><p class="metric-value">${analysis.indicators.rsi14.toFixed(2)}</p></article>
-          <article class="metric-card"><p class="metric-label">Volumen actual</p><p class="metric-value">${formatVolume(analysis.indicators.currentVolume)}</p></article>
-          <article class="metric-card"><p class="metric-label">Promedio 10 velas</p><p class="metric-value">${formatVolume(analysis.indicators.averageVolume10)}</p></article>
+        <section class="metric-grid compact-metrics">
+          <article class="metric-card">
+            <p class="metric-label">RSI</p>
+            <p class="metric-value">${analysis.indicators.rsi14.toFixed(2)}</p>
+            <p class="metric-subvalue">${analysis.rsiStateLabel}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">Volumen</p>
+            <p class="metric-value">${formatPercent(analysis.indicators.volumeDeltaPercent)} vs promedio 10 velas</p>
+            <p class="metric-subvalue">Última vela cerrada: ${formatVolume(analysis.indicators.currentVolume)}</p>
+          </article>
         </section>
 
-        <section class="text-card card">
-          <h3>Lectura del setup</h3>
-          <div class="condition-grid">
-            ${conditionCards
-              .map(
-                (item) => `
-                  <article class="condition-card">
-                    <p class="condition-label">${escapeHtml(item.label)}</p>
-                    <p class="condition-value">${escapeHtml(item.value)}</p>
-                  </article>
-                `,
-              )
-              .join("")}
-          </div>
-        </section>
-
-        <section class="text-card card">
-          <h3>Soporte y resistencia</h3>
-          <div class="level-grid">
-            <article class="level-card">
-              <p class="level-label">Soporte cercano</p>
-              <p class="level-value">${supportValue}</p>
-            </article>
-            <article class="level-card">
-              <p class="level-label">Resistencia cercana</p>
-              <p class="level-value">${resistanceValue}</p>
-            </article>
-          </div>
+        <section class="level-grid">
+          <article class="level-card">
+            <p class="level-label">Soporte cercano</p>
+            <p class="level-value">${supportValue}</p>
+            <p class="metric-subvalue">${supportDistance ? `Distancia ${supportDistance}` : "Sin distancia útil"}</p>
+          </article>
+          <article class="level-card">
+            <p class="level-label">Resistencia cercana</p>
+            <p class="level-value">${resistanceValue}</p>
+            <p class="metric-subvalue">${resistanceDistance ? `Distancia ${resistanceDistance}` : "Sin distancia útil"}</p>
+          </article>
         </section>
 
         <section class="text-card card">
